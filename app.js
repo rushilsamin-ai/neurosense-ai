@@ -1,4 +1,4 @@
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "https://neurosense-ai-ox4b.onrender.com";
 
 async function checkBackend() {
     const dot = document.getElementById("backend-status-dot");
