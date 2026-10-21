@@ -1,17 +1,18 @@
-import os
+import ast
 import re
-import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from textblob import TextBlob
 
 app = FastAPI(
-    title="NeuroSense AI Platform API",
-    description="Multi-Modal Machine Learning & Natural Language Telemetry Microservice",
-    version="2.4.0"
+    title="NeuroSense AI Engine",
+    version="2.4.0",
+    docs_url="/docs",
+    redoc_url=None
 )
 
+# Enable CORS for external access (Vercel, local testing, etc.)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,117 +21,133 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class SentimentRequest(BaseModel):
-    text: str
-
+# --- Data Models ---
 class SummarizeRequest(BaseModel):
     text: str
     ratio: float = 0.5
+
+class SentimentRequest(BaseModel):
+    text: str
 
 class CodeAuditRequest(BaseModel):
     code: str
     language: str = "python"
 
+
+# --- API Routes ---
 @app.get("/")
-def system_health():
+def health_check():
     return {
         "system": "NeuroSense AI Operational Engine",
         "status": "ONLINE",
         "engine_version": "2.4.0-Release"
     }
 
-@app.post("/api/v1/sentiment")
-def analyze_sentiment(payload: SentimentRequest):
-    start_time = time.time()
-    clean_text = payload.text.strip()
-    if not clean_text:
-        raise HTTPException(status_code=400, detail="Input text cannot be empty.")
+@app.post("/api/v1/summarize")
+def summarize_text(req: SummarizeRequest):
+    content = req.text.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Text payload cannot be empty.")
+    
+    sentences = re.split(r'(?<=[.!?])\s+', content)
+    original_count = len(content.split())
+    
+    if len(sentences) <= 2:
+        summary = content
+    else:
+        keep_count = max(1, int(len(sentences) * req.ratio))
+        summary = " ".join(sentences[:keep_count])
+        
+    condensed_count = len(summary.split())
+    reduction = round(((original_count - condensed_count) / max(original_count, 1)) * 100, 1)
 
-    blob = TextBlob(clean_text)
-    polarity = blob.sentiment.polarity
-    subjectivity = blob.sentiment.subjectivity
+    return {
+        "original_word_count": original_count,
+        "condensed_word_count": condensed_count,
+        "compression_efficiency": f"{reduction}% Reduction",
+        "executive_summary": summary
+    }
+
+@app.post("/api/v1/sentiment")
+def analyze_sentiment(req: SentimentRequest):
+    content = req.text.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Text payload cannot be empty.")
+    
+    blob = TextBlob(content)
+    polarity = round(blob.sentiment.polarity, 2)
+    subjectivity = round(blob.sentiment.subjectivity, 2)
 
     if polarity > 0.15:
-        verdict = "Positive Sentiment"
+        verdict = "POSITIVE"
         color = "#10b981"
     elif polarity < -0.15:
-        verdict = "Negative Sentiment"
+        verdict = "NEGATIVE"
         color = "#ef4444"
     else:
-        verdict = "Neutral Sentiment"
+        verdict = "NEUTRAL"
         color = "#94a3b8"
+
+    confidence = round((abs(polarity) * 0.7 + subjectivity * 0.3) * 100, 1)
 
     return {
         "classification": verdict,
         "accent_color": color,
         "metrics": {
-            "polarity_score": round(polarity, 3),
-            "confidence_ratio": f"{int(min(98.5, max(60.0, (1 - subjectivity) * 45 + abs(polarity) * 55)))}%"
+            "polarity_score": polarity,
+            "subjectivity_score": subjectivity,
+            "confidence_ratio": f"{confidence}%"
         }
-    }
-
-@app.post("/api/v1/summarize")
-def summarize_document(payload: SummarizeRequest):
-    text = payload.text.strip()
-    words_list = text.split()
-    if len(words_list) < 10:
-        raise HTTPException(status_code=400, detail="Enter at least 10 words.")
-
-    sentences = re.split(r'(?<=[.!?]) +', text)
-    if len(sentences) <= 2:
-        return {
-            "original_word_count": len(words_list),
-            "condensed_word_count": len(words_list),
-            "compression_efficiency": "0%",
-            "executive_summary": text
-        }
-
-    tokens = re.findall(r'\w+', text.lower())
-    stopwords = {"the", "a", "an", "in", "on", "of", "at", "by", "for", "with", "is", "was", "are", "and", "or", "to"}
-    freq = {}
-    for tok in tokens:
-        if tok not in stopwords:
-            freq[tok] = freq.get(tok, 0) + 1
-
-    max_val = max(freq.values()) if freq else 1
-    for k in freq:
-        freq[k] /= max_val
-
-    scored_sentences = {}
-    for s in sentences:
-        s_tokens = re.findall(r'\w+', s.lower())
-        score = sum(freq.get(t, 0) for t in s_tokens)
-        scored_sentences[s] = score / (len(s_tokens) + 1)
-
-    cutoff = max(1, int(len(sentences) * payload.ratio))
-    top_ranked = sorted(scored_sentences.items(), key=lambda x: x[1], reverse=True)[:cutoff]
-    summary_ordered = [s for s in sentences if s in dict(top_ranked)]
-
-    condensed = " ".join(summary_ordered)
-    orig_count = len(words_list)
-    summ_count = len(condensed.split())
-    efficiency = round(((orig_count - summ_count) / orig_count) * 100, 1)
-
-    return {
-        "original_word_count": orig_count,
-        "condensed_word_count": summ_count,
-        "compression_efficiency": f"{efficiency}%",
-        "executive_summary": condensed
     }
 
 @app.post("/api/v1/code-audit")
-def audit_code_security(payload: CodeAuditRequest):
-    code = payload.code.strip()
-    findings = []
+def audit_code(req: CodeAuditRequest):
+    source = req.code.strip()
+    if not source:
+        raise HTTPException(status_code=400, detail="Source code cannot be empty.")
 
-    if re.search(r'except\s*:', code):
-        findings.append({"level": "HIGH", "message": "Bare except: block catches system interrupts and masks bugs."})
-    if re.search(r'\b(eval|exec)\s*\(', code):
-        findings.append({"level": "CRITICAL", "message": "Dynamic code execution (eval/exec) detected. Risk of RCE."})
+    vulnerabilities = []
+    
+    # 1. AST Structural Analysis
+    try:
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name) and node.func.id in ["eval", "exec"]:
+                    vulnerabilities.append({
+                        "message": f"Critical dynamic code execution via {node.func.id}()",
+                        "level": "CRITICAL"
+                    })
+    except SyntaxError as e:
+        return {
+            "audit_grade": "SYNTAX_ERROR",
+            "vulnerabilities": [{
+                "message": f"Syntax parsing failed: {e.msg} at line {e.lineno}",
+                "level": "CRITICAL"
+            }]
+        }
 
-    grade = "Grade A (Secure)" if len(findings) == 0 else "Grade D (Vulnerable)"
+    # 2. Heuristic Pattern Detection
+    dangerous_patterns = [
+        (r"os\.system\(", "Unsanitized system shell invocation (os.system)", "CRITICAL"),
+        (r"subprocess\.Popen\(", "Direct process spawn risk (subprocess.Popen)", "WARNING"),
+        (r"(password|secret|token)\s*=\s*['\"][^'\"]+['\"]", "Hardcoded credential detected in plain text", "WARNING"),
+        (r"except\s*:\s*(pass)?", "Bare generic except clause suppressing errors", "NOTICE")
+    ]
+
+    for pattern, label, severity in dangerous_patterns:
+        if re.search(pattern, source, re.IGNORECASE):
+            vulnerabilities.append({"message": label, "level": severity})
+
+    if not vulnerabilities:
+        vulnerabilities.append({"message": "Clean compilation: No immediate critical risks detected.", "level": "PASSED"})
+        grade = "A+"
+    elif any(v["level"] == "CRITICAL" for v in vulnerabilities):
+        grade = "FAIL"
+    else:
+        grade = "B"
 
     return {
         "audit_grade": grade,
-        "vulnerabilities": findings if findings else [{"level": "INFO", "message": "No static security issues detected."}]
+        "vulnerabilities": vulnerabilities
     }
